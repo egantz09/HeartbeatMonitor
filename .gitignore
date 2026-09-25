@@ -1,0 +1,138 @@
+# =====================================================================
+# HeartbeatMonitor — .gitignore
+# =====================================================================
+
+# ---------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ---------------------------------------------------------------
+# Entornos virtuales
+# ---------------------------------------------------------------
+.venv/
+venv/
+ENV/
+env/
+.python-version
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ---------------------------------------------------------------
+# Datos locales de la aplicación (¡NUNCA subir!)
+# ---------------------------------------------------------------
+data/
+reports/
+*.db
+*.sqlite
+*.sqlite3
+*.log
+state.json
+settings.json
+heartbeat.db
+
+# ---------------------------------------------------------------
+# Salidas de compilación (PyInstaller)
+# ---------------------------------------------------------------
+build/
+dist/
+*.spec.bak
+*.manifest
+
+# ---------------------------------------------------------------
+# IDE / Editor
+# ---------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+*.sublime-workspace
+*.sublime-project
+
+# ---------------------------------------------------------------
+# Sistema operativo (Windows / macOS / Linux)
+# ---------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# ---------------------------------------------------------------
+# Testing / Coverage
+# ---------------------------------------------------------------
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+*.cover
+
+# ---------------------------------------------------------------
+# Type checkers / linters
+# ---------------------------------------------------------------
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.pytype/
+
+# ---------------------------------------------------------------
+# Secretos y configuración sensible
+# ---------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.json
+credentials.json
+
+# ---------------------------------------------------------------
+# Archivos temporales
+# ---------------------------------------------------------------
+*.bak
+*.tmp
+*.temp
+*.orig
+*.rej
+*.old
+
+# ---------------------------------------------------------------
+# Logs (excepto el directorio de logs vacío si existe)
+# ---------------------------------------------------------------
+*.log
+logs/
+!data/logs/.gitkeep

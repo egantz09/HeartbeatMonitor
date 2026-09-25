@@ -1,4 +1,9 @@
 # ui/tabs/metrics_tab.py
+"""
+Metricas de red: ping por host con graficas independientes.
+Soporta desactivacion completa via `ping_enabled`.
+"""
+import logging
 from datetime import datetime, timedelta, time as dtime
 
 from PyQt6.QtWidgets import (
@@ -13,14 +18,15 @@ from core.config import Config
 from core.analytics import net_status_per_host
 from ui.charts import SingleMetricChart
 
+log = logging.getLogger(__name__)
 
-# Modos del combo:  (etiqueta, horas_atras | "today")
+
 RANGOS = [
-    ("Hoy (00:00 → ahora)", "today"),
-    ("Últimas 6 h",        6),
-    ("Últimas 24 h",       24),
-    ("Últimos 7 días",     24 * 7),
-    ("Últimos 30 días",    24 * 30),
+    ("Hoy (00:00 - ahora)", "today"),
+    ("Ultimas 6 h",         6),
+    ("Ultimas 24 h",        24),
+    ("Ultimos 7 dias",      24 * 7),
+    ("Ultimos 30 dias",     24 * 30),
 ]
 
 
@@ -45,7 +51,7 @@ class HostCard(QFrame):
         self.lbl_host.setStyleSheet("color: #888; font-size: 10px;")
         lay.addWidget(self.lbl_host)
 
-        self.lbl_status = QLabel("—")
+        self.lbl_status = QLabel("-")
         f = QFont()
         f.setPointSize(14)
         f.setBold(True)
@@ -60,13 +66,13 @@ class HostCard(QFrame):
         if info["ok"]:
             ms = info.get("ping_ms")
             self.lbl_status.setText(
-                f"{ms:.0f} ms" if ms is not None else "En línea"
+                f"{ms:.0f} ms" if ms is not None else "En linea"
             )
             self.lbl_status.setStyleSheet(
                 "color: #2E7D32; font-weight: bold; font-size: 14px;"
             )
         else:
-            self.lbl_status.setText("Sin conexión")
+            self.lbl_status.setText("Sin conexion")
             self.lbl_status.setStyleSheet(
                 "color: #C62828; font-weight: bold; font-size: 14px;"
             )
@@ -74,9 +80,8 @@ class HostCard(QFrame):
         t = info.get("time", "")
         t_str = t[11:19] if len(t) >= 19 else t
         self.lbl_sub.setText(
-            f"Uptime {info['uptime_pct']:.1f} % · "
-            f"{info['downs']} caídas · "
-            f"{t_str}"
+            f"Uptime {info['uptime_pct']:.1f} % - "
+            f"{info['downs']} caidas - {t_str}"
         )
 
 
@@ -84,8 +89,8 @@ class MetricsTab(QWidget):
 
     def __init__(self):
         super().__init__()
-        self._host_charts = {}   # {host: SingleMetricChart}
-        self._host_cards = {}    # {host: HostCard}
+        self._host_charts = {}
+        self._host_cards = {}
         self._current_hosts = []
         self._disabled_lbl = None
 
@@ -99,12 +104,12 @@ class MetricsTab(QWidget):
         self.cmb_range = QComboBox()
         for label, _ in RANGOS:
             self.cmb_range.addItem(label)
-        self.cmb_range.setCurrentIndex(0)   # "Hoy" por defecto
+        self.cmb_range.setCurrentIndex(0)
         self.cmb_range.currentIndexChanged.connect(self.refresh)
         header.addWidget(self.cmb_range)
         header.addStretch()
 
-        self.lbl_last = QLabel("—")
+        self.lbl_last = QLabel("-")
         self.lbl_last.setStyleSheet("color: #888; font-size: 10px;")
         header.addWidget(self.lbl_last)
         root.addLayout(header)
@@ -136,7 +141,6 @@ class MetricsTab(QWidget):
 
     # ------------------------------------------------------------------
     def _clear_hosts(self):
-        """Limpia tarjetas y gráficas."""
         while self._cards_row.count():
             item = self._cards_row.takeAt(0)
             w = item.widget()
@@ -151,14 +155,13 @@ class MetricsTab(QWidget):
 
     # ------------------------------------------------------------------
     def _show_disabled_message(self):
-        """Vacía la vista y muestra el mensaje de desactivado."""
         self._clear_hosts()
         self._current_hosts = []
 
         if self._disabled_lbl is None:
             self._disabled_lbl = QLabel(
-                "El monitoreo de red está desactivado.\n\n"
-                "Puedes activarlo en Configuración → "
+                "El monitoreo de red esta desactivado.\n\n"
+                "Puedes activarlo en Configuracion -> "
                 "'Activar monitoreo de red (ping)'."
             )
             self._disabled_lbl.setStyleSheet(
@@ -169,16 +172,13 @@ class MetricsTab(QWidget):
         else:
             self._disabled_lbl.show()
 
-        # Deshabilitar el combo de rango (no tiene sentido sin datos)
         self.cmb_range.setEnabled(False)
         self.lbl_last.setText("Monitoreo desactivado")
 
     # ------------------------------------------------------------------
     def _rebuild_if_needed(self) -> bool:
-        # Ocultar el mensaje de desactivado si existe
         if self._disabled_lbl is not None:
             self._disabled_lbl.hide()
-
         self.cmb_range.setEnabled(True)
 
         hosts = Config.get("ping_hosts", []) or []
@@ -193,20 +193,20 @@ class MetricsTab(QWidget):
         if not hosts:
             lbl = QLabel(
                 "No hay hosts configurados.\n"
-                "Ve a Configuración y añade al menos un host para hacer ping."
+                "Ve a Configuracion y anade al menos un host."
             )
             lbl.setStyleSheet("color: #888; padding: 20px;")
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self._content_layout.insertWidget(0, lbl)
             return True
 
-        # --- Tarjetas ---
+        # Tarjetas
         for h in hosts:
             card = HostCard(h)
             self._host_cards[h] = card
             self._cards_row.addWidget(card)
 
-        # --- Gráficas ---
+        # Graficas
         for h in hosts:
             chart = SingleMetricChart(
                 f"Ping a {h} (ms)",
@@ -224,22 +224,17 @@ class MetricsTab(QWidget):
 
     # ------------------------------------------------------------------
     def _get_range(self):
-        """Devuelve (start_dt, end_dt) según el combo."""
         idx = self.cmb_range.currentIndex()
         _, mode = RANGOS[idx]
-
         now = datetime.now()
 
         if mode == "today":
-            start = datetime.combine(now.date(), dtime.min)
-            return start, now
+            return datetime.combine(now.date(), dtime.min), now
 
-        start = now - timedelta(hours=int(mode))
-        return start, now
+        return now - timedelta(hours=int(mode)), now
 
     # ------------------------------------------------------------------
     def refresh(self):
-        # Si el monitoreo está desactivado, mostrar mensaje y salir
         if not Config.get("ping_enabled", True):
             self._show_disabled_message()
             return
@@ -252,8 +247,13 @@ class MetricsTab(QWidget):
 
         start_dt, end_dt = self._get_range()
 
-        # --- Tarjetas (resumen últimas 24 h) ---
-        info = net_status_per_host(hours=24)
+        # Tarjetas
+        try:
+            info = net_status_per_host(hours=24)
+        except Exception as e:
+            log.warning(f"Error obteniendo estado de red: {e}")
+            info = {}
+
         for host, card in self._host_cards.items():
             data = info.get(host)
             if data:
@@ -265,10 +265,16 @@ class MetricsTab(QWidget):
                 )
                 card.lbl_sub.setText("")
 
-        # --- Gráficas ---
+        # Graficas
         last_time = None
         for host, chart in self._host_charts.items():
-            metrics = Database.pings_for_host(host, hours=24 * 30, limit=100_000)
+            try:
+                metrics = Database.pings_for_host(
+                    host, hours=24 * 30, limit=100_000
+                )
+            except Exception as e:
+                log.warning(f"Error leyendo pings de {host}: {e}")
+                metrics = []
 
             filtrados = [
                 m for m in metrics
@@ -281,7 +287,8 @@ class MetricsTab(QWidget):
 
             cron = list(reversed(filtrados))
             xs = [datetime.fromisoformat(m["timestamp"]) for m in cron]
-            ys = [m["ping_ms"] if m["ping_ms"] is not None else 0 for m in cron]
+            ys = [m["ping_ms"] if m["ping_ms"] is not None else 0
+                  for m in cron]
             fails = [xs[i] for i, m in enumerate(cron) if not m["ping_ok"]]
 
             max_ping = max(ys) if ys else 0
@@ -292,4 +299,4 @@ class MetricsTab(QWidget):
                 last_time = filtrados[0]["timestamp"]
 
         if last_time:
-            self.lbl_last.setText(f"Última lectura: {last_time}")
+            self.lbl_last.setText(f"Ultima lectura: {last_time}")

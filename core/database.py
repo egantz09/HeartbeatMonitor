@@ -13,6 +13,12 @@ class Database:
     def _conn():
         conn = sqlite3.connect(DB_FILE, timeout=10)
         conn.row_factory = sqlite3.Row
+        # WAL mejora concurrencia lectura/escritura
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+        except sqlite3.DatabaseError:
+            pass
         try:
             yield conn
             conn.commit()
@@ -25,7 +31,6 @@ class Database:
     @classmethod
     def init(cls):
         with cls._conn() as c:
-            # Eventos
             c.execute("""
                 CREATE TABLE IF NOT EXISTS events (
                     id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -37,7 +42,6 @@ class Database:
             c.execute("CREATE INDEX IF NOT EXISTS idx_events_ts ON events(timestamp)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_events_ev ON events(event)")
 
-            # Resúmenes diarios
             c.execute("""
                 CREATE TABLE IF NOT EXISTS summaries (
                     day        TEXT PRIMARY KEY,
@@ -48,9 +52,6 @@ class Database:
                 )
             """)
 
-    # ------------------------------------------------------------------
-    # Init pings multi-host
-    # ------------------------------------------------------------------
     @classmethod
     def init_ping(cls):
         with cls._conn() as c:
@@ -94,6 +95,46 @@ class Database:
                 "SELECT timestamp, event, detail FROM events ORDER BY timestamp"
             ).fetchall()
         return [dict(r) for r in rows]
+
+    @classmethod
+    def events_with_duration(cls, start: datetime, end: datetime):
+        """
+        Devuelve los eventos del rango con un campo extra `duration_seconds`
+        calculado como la diferencia con el siguiente evento.
+        """
+        with cls._conn() as c:
+            rows = c.execute(
+                "SELECT timestamp, event, detail FROM events "
+                "WHERE timestamp BETWEEN ? AND ? ORDER BY timestamp",
+                (start.isoformat(), end.isoformat()),
+            ).fetchall()
+            events = [dict(r) for r in rows]
+
+            next_after = c.execute(
+                "SELECT timestamp FROM events "
+                "WHERE timestamp > ? ORDER BY timestamp LIMIT 1",
+                (end.isoformat(),),
+            ).fetchone()
+            next_ts = next_after["timestamp"] if next_after else None
+
+        result = []
+        for i, ev in enumerate(events):
+            ts = datetime.fromisoformat(ev["timestamp"])
+            if i + 1 < len(events):
+                nxt = datetime.fromisoformat(events[i + 1]["timestamp"])
+            elif next_ts:
+                nxt = datetime.fromisoformat(next_ts)
+            else:
+                nxt = None
+
+            dur = (nxt - ts).total_seconds() if nxt else None
+            result.append({
+                "timestamp": ev["timestamp"],
+                "event": ev["event"],
+                "detail": ev["detail"],
+                "duration_seconds": dur,
+            })
+        return result
 
     @classmethod
     def count_events(cls, event: str, day: date) -> int:
@@ -178,7 +219,6 @@ class Database:
 
     @classmethod
     def latest_ping_per_host(cls, hours: int = 24):
-        """Devuelve {host: último_registro}."""
         start = datetime.now() - timedelta(hours=hours)
         with cls._conn() as c:
             rows = c.execute("""
@@ -201,51 +241,21 @@ class Database:
                 (start.isoformat(),),
             ).fetchall()
         return [r["host"] for r in rows]
-    
-#-----------------
 
+    # ------------------------------------------------------------------
+    # Mantenimiento
+    # ------------------------------------------------------------------
     @classmethod
-    def events_with_duration(cls, start: datetime, end: datetime):
+    def purge_old_data(cls, days: int = 365) -> int:
         """
-        Devuelve los eventos del rango con un campo extra `duration_seconds`
-        (float | None) calculado como la diferencia con el siguiente evento.
-
-        El último evento del rango busca su "siguiente" fuera del rango,
-        para calcular bien la duración de un BOOT que aún está corriendo.
+        Elimina eventos y pings más antiguos que `days`.
+        Devuelve el total de filas borradas.
         """
-        # Traemos los eventos del rango + el primero posterior al rango
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        deleted = 0
         with cls._conn() as c:
-            rows = c.execute(
-                "SELECT timestamp, event, detail FROM events "
-                "WHERE timestamp BETWEEN ? AND ? ORDER BY timestamp",
-                (start.isoformat(), end.isoformat()),
-            ).fetchall()
-            events = [dict(r) for r in rows]
-
-            # Siguiente evento posterior al rango (para cerrar el último)
-            next_after = c.execute(
-                "SELECT timestamp FROM events "
-                "WHERE timestamp > ? ORDER BY timestamp LIMIT 1",
-                (end.isoformat(),),
-            ).fetchone()
-            next_ts = next_after["timestamp"] if next_after else None
-
-        # Calcular duración para cada evento
-        result = []
-        for i, ev in enumerate(events):
-            ts = datetime.fromisoformat(ev["timestamp"])
-            if i + 1 < len(events):
-                nxt = datetime.fromisoformat(events[i + 1]["timestamp"])
-            elif next_ts:
-                nxt = datetime.fromisoformat(next_ts)
-            else:
-                nxt = None
-
-            dur = (nxt - ts).total_seconds() if nxt else None
-            result.append({
-                "timestamp": ev["timestamp"],
-                "event": ev["event"],
-                "detail": ev["detail"],
-                "duration_seconds": dur,
-            })
-        return result
+            cur = c.execute("DELETE FROM events WHERE timestamp < ?", (cutoff,))
+            deleted += cur.rowcount
+            cur = c.execute("DELETE FROM ping_metrics WHERE timestamp < ?", (cutoff,))
+            deleted += cur.rowcount
+        return deleted

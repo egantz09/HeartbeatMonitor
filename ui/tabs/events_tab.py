@@ -1,4 +1,8 @@
 # ui/tabs/events_tab.py
+"""
+Tabla de eventos con filtro por tipo, rango de fechas y columna de duracion.
+"""
+import logging
 from datetime import datetime, timedelta
 
 from PyQt6.QtCore import Qt, QDate
@@ -12,18 +16,20 @@ from PyQt6.QtWidgets import (
 from core.database import Database
 from services.pdf_export import export_range_pdf
 
+log = logging.getLogger(__name__)
+
 
 # ----------------------------------------------------------------------
-# Helpers
-# ----------------------------------------------------------------------
-def _fmt_duration(seconds: float | None) -> str:
-    """Convierte segundos a un texto legible: '3d 04h 12m', '4h 20m', '12m 05s'."""
+def _fmt_duration(seconds) -> str:
+    """Convierte segundos a '3d 04h 12m', '4h 20m', '12m 05s'."""
     if seconds is None:
-        return "—"
-
-    seconds = int(seconds)
+        return "-"
+    try:
+        seconds = int(seconds)
+    except (TypeError, ValueError):
+        return "-"
     if seconds < 0:
-        return "—"
+        return "-"
 
     d, rem = divmod(seconds, 86400)
     h, rem = divmod(rem, 3600)
@@ -46,12 +52,13 @@ class EventsTab(QWidget):
         self._build_ui()
         self.refresh()
 
+    # ------------------------------------------------------------------
     def _build_ui(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
 
-        # Cabecera con filtro
         header = QHBoxLayout()
+
         header.addWidget(QLabel("Filtrar:"))
         self.cmb_filter = QComboBox()
         self.cmb_filter.addItems([
@@ -84,27 +91,22 @@ class EventsTab(QWidget):
 
         root.addLayout(header)
 
-        # Tabla con 4 columnas
+        # Tabla
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(
-            ["FechaHora", "Evento", "Duración", "Detalle"]
+            ["FechaHora", "Evento", "Duracion", "Detalle"]
         )
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.ResizeToContents
+        self.table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows
         )
-        self.table.horizontalHeader().setSectionResizeMode(
-            1, QHeaderView.ResizeMode.ResizeToContents
-        )
-        self.table.horizontalHeader().setSectionResizeMode(
-            2, QHeaderView.ResizeMode.ResizeToContents
-        )
-        self.table.horizontalHeader().setSectionResizeMode(
-            3, QHeaderView.ResizeMode.Stretch
-        )
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         root.addWidget(self.table)
 
     # ------------------------------------------------------------------
@@ -115,9 +117,13 @@ class EventsTab(QWidget):
         end = datetime.combine(
             self.dt_to.date().toPyDate(), datetime.max.time()
         )
+        try:
+            events = Database.events_with_duration(start, end)
+        except Exception as e:
+            log.warning(f"Error cargando eventos: {e}")
+            events = []
 
-        events = Database.events_with_duration(start, end)
-        self._cache = list(reversed(events))   # más recientes primero
+        self._cache = list(reversed(events))
         self._apply_filter()
 
     # ------------------------------------------------------------------
@@ -140,32 +146,29 @@ class EventsTab(QWidget):
             "NET_DOWN":     Qt.GlobalColor.red,
             "NET_UP":       Qt.GlobalColor.darkGreen,
         }
+        bg_critical = QBrush(QColor(198, 40, 40, 40))
 
         for row, ev in enumerate(events):
             i0 = QTableWidgetItem(ev["timestamp"].replace("T", " "))
             i1 = QTableWidgetItem(ev["event"])
             i2 = QTableWidgetItem(_fmt_duration(ev.get("duration_seconds")))
-            i3 = QTableWidgetItem(ev["detail"])
+            i3 = QTableWidgetItem(ev["detail"] or "")
 
             if ev["event"] in color_map:
                 i1.setForeground(color_map[ev["event"]])
 
-            # Duración en negrita si es larga
             dur = ev.get("duration_seconds")
             if dur is not None:
-                if dur >= 3600 * 6:      # ≥ 6 h
+                if dur >= 3600 * 6:
                     i2.setForeground(Qt.GlobalColor.darkGreen)
-                elif dur >= 3600:        # ≥ 1 h
+                elif dur >= 3600:
                     i2.setForeground(Qt.GlobalColor.darkBlue)
-                # < 1 h: color normal
 
-            # Fondo suave para eventos críticos
             if ev["event"] in ("POWER_LOSS", "KERNEL_POWER", "NET_DOWN"):
-                bg = QBrush(QColor(198, 40, 40, 40))
-                i0.setBackground(bg)
-                i1.setBackground(bg)
-                i2.setBackground(bg)
-                i3.setBackground(bg)
+                i0.setBackground(bg_critical)
+                i1.setBackground(bg_critical)
+                i2.setBackground(bg_critical)
+                i3.setBackground(bg_critical)
 
             self.table.setItem(row, 0, i0)
             self.table.setItem(row, 1, i1)
@@ -177,8 +180,10 @@ class EventsTab(QWidget):
         start = self.dt_from.date().toPyDate()
         end = self.dt_to.date().toPyDate()
         if start > end:
-            QMessageBox.warning(self, "Rango inválido",
-                                "La fecha 'Desde' es posterior a 'Hasta'.")
+            QMessageBox.warning(
+                self, "Rango invalido",
+                "La fecha 'Desde' es posterior a 'Hasta'."
+            )
             return
         try:
             path = export_range_pdf(start, end)

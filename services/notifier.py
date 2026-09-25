@@ -1,15 +1,25 @@
 # services/notifier.py
+"""
+Wrapper sobre QSystemTrayIcon para enviar notificaciones.
+Respeta los toggles de configuración:
+  - notifications_enabled → global
+  - ping_enabled → solo para notificaciones de red
+"""
+import logging
+
 from PyQt6.QtWidgets import QSystemTrayIcon
 
 from core.config import Config
 
+log = logging.getLogger(__name__)
+
 
 class Notifier:
-    """Envuelve un TrayIcon para mandar notificaciones."""
 
     def __init__(self, tray: QSystemTrayIcon = None):
         self.tray = tray
 
+    # ------------------------------------------------------------------
     def set_tray(self, tray: QSystemTrayIcon):
         self.tray = tray
 
@@ -20,7 +30,9 @@ class Notifier:
     def _ping_enabled(self) -> bool:
         return bool(Config.get("ping_enabled", True))
 
-    def _show(self, title: str, message: str, icon=None, ms: int = 5000):
+    def _show(self, title: str, message: str,
+              icon=None, ms: int = 5000):
+        """Envía una notificación respetando el toggle global."""
         if not self._notifications_enabled():
             return
         if self.tray is None:
@@ -29,8 +41,8 @@ class Notifier:
             icon = QSystemTrayIcon.MessageIcon.Information
         try:
             self.tray.showMessage(title, message, icon, ms)
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug(f"No se pudo mostrar notificación: {e}")
 
     # ------------------------------------------------------------------
     # Corte eléctrico
@@ -65,7 +77,8 @@ class Notifier:
     # ------------------------------------------------------------------
     # Hardware
     # ------------------------------------------------------------------
-    def notify_hw_alert(self, metric: str, value: float, threshold: float):
+    def notify_hw_alert(self, metric: str,
+                        value: float, threshold: float):
         self._show(
             f"Alerta de {metric}",
             f"Uso actual: {value:.1f} %  (límite {threshold:.0f} %)",
@@ -74,7 +87,7 @@ class Notifier:
         )
 
     # ------------------------------------------------------------------
-    # Red (solo si el monitoreo de red está activo)
+    # Red (solo si el monitoreo está activo)
     # ------------------------------------------------------------------
     def notify_net(self, up: bool, host: str):
         if not self._ping_enabled():

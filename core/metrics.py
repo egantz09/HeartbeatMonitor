@@ -1,44 +1,21 @@
 # core/metrics.py
+"""
+Utilidades de red. Solo se usa `ping()` en el resto de la app.
+"""
 import logging
 import platform
+import re
 import subprocess
-from datetime import datetime
-
-import psutil
 
 log = logging.getLogger(__name__)
 
 
-def cpu_percent() -> float:
-    try:
-        return float(psutil.cpu_percent(interval=None))
-    except Exception:
-        return 0.0
-
-
-def ram_percent() -> float:
-    try:
-        return float(psutil.virtual_memory().percent)
-    except Exception:
-        return 0.0
-
-
-def disk_percent(path: str = None) -> float:
-    """Uso del disco en el que está instalada la app (o el indicado)."""
-    try:
-        if path is None:
-            # En Windows usamos la unidad donde está la app
-            from core.constants import BASE_DIR
-            path = BASE_DIR.anchor or "C:\\"
-        return float(psutil.disk_usage(path).percent)
-    except Exception:
-        return 0.0
-
-
-def ping(host: str, timeout_ms: int = 1500) -> tuple[bool, float | None]:
+def ping(host: str, timeout_ms: int = 1000) -> tuple:
     """
-    Devuelve (ok, latency_ms). Si falla, latency_ms = None.
-    Usa el ping nativo del SO. Sin dependencias externas.
+    Hace un ping ICMP a `host`.
+    Devuelve (ok: bool, latency_ms: float | None).
+
+    Usa el comando nativo del SO (ping en Windows / Linux).
     """
     if not host:
         return False, None
@@ -48,43 +25,35 @@ def ping(host: str, timeout_ms: int = 1500) -> tuple[bool, float | None]:
         if system == "windows":
             cmd = ["ping", "-n", "1", "-w", str(timeout_ms), host]
         else:
-            cmd = ["ping", "-c", "1", "-W", str(max(1, timeout_ms // 1000)), host]
+            cmd = ["ping", "-c", "1",
+                   "-W", str(max(1, timeout_ms // 1000)), host]
 
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            timeout=(timeout_ms / 1000) + 1.0,
+            timeout=(timeout_ms / 1000) + 0.5,
         )
+
         if result.returncode != 0:
             return False, None
 
-        # Extraer latencia del texto
-        lat = _parse_ping_latency(result.stdout)
+        lat = _parse_latency(result.stdout)
         return True, lat
+
+    except subprocess.TimeoutExpired:
+        return False, None
     except Exception as e:
         log.debug(f"Ping a {host} falló: {e}")
         return False, None
 
 
-def _parse_ping_latency(output: str) -> float | None:
-    """Extrae el tiempo en ms de la salida del ping."""
-    import re
-    # Windows: "tiempo=23ms" o "time=23ms"
-    m = re.search(r"(?:tiempo|time)[=<](\d+)\s*ms", output, re.IGNORECASE)
+def _parse_latency(output: str) -> float | None:
+    """Extrae 'time=XXms' o 'tiempo=XXms' del output de ping."""
+    if not output:
+        return None
+    m = re.search(r"(?:tiempo|time)[=<]\s*(\d+(?:[.,]\d+)?)\s*ms",
+                  output, re.IGNORECASE)
     if m:
-        return float(m.group(1))
+        return float(m.group(1).replace(",", "."))
     return None
-
-
-def collect(ping_host: str) -> dict:
-    """Recolecta todas las métricas de una sola vez."""
-    ok, latency = ping(ping_host)
-    return {
-        "timestamp": datetime.now().isoformat(timespec="seconds"),
-        "cpu": cpu_percent(),
-        "ram": ram_percent(),
-        "disk": disk_percent(),
-        "ping_ms": latency,
-        "ping_ok": ok,
-    }

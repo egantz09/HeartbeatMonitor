@@ -2,10 +2,11 @@
 """
 Lectura del Event Log de Windows para detectar apagados inesperados.
 
-- Event ID 41 (Kernel-Power) → apagado brusco / corte eléctrico
-- Event ID 6008 → apagado inesperado
-- Event ID 1074 → apagado iniciado por proceso (Windows Update, etc.)
-- Event ID 6005 → inicio del servicio Event Log (= sistema arrancó)
+IDs de interés:
+  41   (Kernel-Power)   → apagado brusco / corte eléctrico
+  6008 (EventLog)       → apagado inesperado
+  1074 (User32)         → apagado iniciado por un proceso (Windows Update, etc.)
+  6005 (EventLog)       → inicio del servicio Event Log (= sistema arrancó)
 """
 import logging
 from datetime import datetime, timedelta
@@ -14,7 +15,6 @@ log = logging.getLogger(__name__)
 
 try:
     import win32evtlog
-    import win32evtlogutil
     _HAS_WIN32 = True
 except ImportError:
     _HAS_WIN32 = False
@@ -22,23 +22,30 @@ except ImportError:
 
 
 # Códigos de interés
-EVENT_ID_KERNEL_POWER   = 41     # apagado brusco
-EVENT_ID_UNEXPECTED     = 6008   # apagado inesperado
-EVENT_ID_SHUTDOWN_INIT  = 1074   # apagado iniciado
-EVENT_ID_BOOT           = 6005   # inicio del log (= arranque)
+EVENT_ID_KERNEL_POWER = 41
+EVENT_ID_UNEXPECTED   = 6008
+EVENT_ID_SHUTDOWN_INIT = 1074
+EVENT_ID_BOOT         = 6005
 
 
 def is_available() -> bool:
     return _HAS_WIN32
 
 
-def read_recent_kernel_power(hours: int = 24) -> list[dict]:
+def read_recent_events(hours: int = 24, event_ids: tuple = None) -> list:
     """
-    Devuelve lista de eventos Kernel-Power (ID 41) recientes.
+    Devuelve una lista de eventos recientes del log "System".
     Cada item: {"time": datetime, "event_id": int, "source": str}
+
+    Si `event_ids` es None, usa los IDs por defecto (41, 6008, 1074).
     """
     if not _HAS_WIN32:
         return []
+
+    if event_ids is None:
+        event_ids = (EVENT_ID_KERNEL_POWER,
+                     EVENT_ID_UNEXPECTED,
+                     EVENT_ID_SHUTDOWN_INIT)
 
     eventos = []
     cutoff = datetime.now() - timedelta(hours=hours)
@@ -50,40 +57,51 @@ def read_recent_kernel_power(hours: int = 24) -> list[dict]:
             | win32evtlog.EVENTLOG_SEQUENTIAL_READ
         )
 
-        total = 0
-        while True:
+        max_records = 5000
+        processed = 0
+        stop = False
+
+        while not stop:
             records = win32evtlog.ReadEventLog(hand, flags, 0)
             if not records:
                 break
+
             for rec in records:
-                ts = rec.TimeGenerated  # datetime
+                processed += 1
+                ts = rec.TimeGenerated
                 if ts < cutoff:
+                    stop = True
                     break
-                if rec.EventID in (EVENT_ID_KERNEL_POWER,
-                                   EVENT_ID_UNEXPECTED,
-                                   EVENT_ID_SHUTDOWN_INIT):
+
+                if rec.EventID in event_ids:
                     eventos.append({
                         "time": ts,
                         "event_id": rec.EventID,
-                        "source": rec.SourceName,
+                        "source": rec.SourceName or "",
                     })
-            total += len(records)
-            if total > 5000:   # límite de seguridad
-                break
+
+                if processed >= max_records:
+                    stop = True
+                    break
 
         win32evtlog.CloseEventLog(hand)
+
     except Exception as e:
         log.warning(f"Error leyendo Event Log: {e}")
 
     return eventos
 
 
-def detect_power_loss_since_last_boot() -> dict | None:
+def detect_power_loss_since_last_boot(hours: int = 24) -> dict | None:
     """
-    Busca un Event ID 41 o 6008 en las últimas 24 h.
-    Si encuentra, devuelve el más reciente.
+    Busca un evento 41 (Kernel-Power) o 6008 (apagado inesperado)
+    en las últimas `hours` horas.
+    Devuelve el más reciente, o None.
     """
-    eventos = read_recent_kernel_power(hours=24)
+    eventos = read_recent_events(
+        hours=hours,
+        event_ids=(EVENT_ID_KERNEL_POWER, EVENT_ID_UNEXPECTED),
+    )
     if not eventos:
         return None
     return max(eventos, key=lambda e: e["time"])

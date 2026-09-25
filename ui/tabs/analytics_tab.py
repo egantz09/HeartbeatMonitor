@@ -1,4 +1,13 @@
 # ui/tabs/analytics_tab.py
+"""
+Analitica de cortes:
+  - Barras horizontales por hora
+  - Barras verticales por dia de la semana
+  - Top 5 cortes mas largos
+  - KPIs resumen
+"""
+import logging
+
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QFrame,
@@ -9,10 +18,12 @@ from PyQt6.QtGui import QFont
 from core.analytics import cuts_heatmap, top_longest_cuts
 from ui.charts import CutsByHourChart, CutsByWeekdayChart
 
+log = logging.getLogger(__name__)
+
 
 class MiniKPI(QFrame):
 
-    def __init__(self, title: str, value: str = "—", subtitle: str = ""):
+    def __init__(self, title: str, value: str = "-", subtitle: str = ""):
         super().__init__()
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setStyleSheet("""
@@ -59,26 +70,26 @@ class AnalyticsTab(QWidget):
         header = QHBoxLayout()
         header.addWidget(QLabel("Rango:"))
         self.cmb_range = QComboBox()
-        self.cmb_range.addItems(["7 días", "30 días", "90 días"])
+        self.cmb_range.addItems(["7 dias", "30 dias", "90 dias"])
         self.cmb_range.setCurrentIndex(1)
         self.cmb_range.currentIndexChanged.connect(self.refresh)
         header.addWidget(self.cmb_range)
         header.addStretch()
         lay.addLayout(header)
 
-        # --- KPIs rápidos ---
+        # --- KPIs ---
         kpis = QHBoxLayout()
-        self.kpi_total   = MiniKPI("Total de cortes")
-        self.kpi_avg     = MiniKPI("Duración media")
-        self.kpi_worst   = MiniKPI("Peor corte")
-        self.kpi_peak    = MiniKPI("Hora más crítica")
+        self.kpi_total = MiniKPI("Total de cortes")
+        self.kpi_avg   = MiniKPI("Duracion media")
+        self.kpi_worst = MiniKPI("Peor corte")
+        self.kpi_peak  = MiniKPI("Hora mas critica")
         kpis.addWidget(self.kpi_total)
         kpis.addWidget(self.kpi_avg)
         kpis.addWidget(self.kpi_worst)
         kpis.addWidget(self.kpi_peak)
         lay.addLayout(kpis)
 
-        # --- Gráficas lado a lado ---
+        # --- Graficas ---
         charts = QHBoxLayout()
         self.chart_hours = CutsByHourChart()
         self.chart_hours.setMinimumHeight(300)
@@ -88,14 +99,14 @@ class AnalyticsTab(QWidget):
         charts.addWidget(self.chart_weekday)
         lay.addLayout(charts)
 
-        # --- Top 5 cortes ---
-        lbl_top = QLabel("Top 5 cortes más largos")
+        # --- Top 5 ---
+        lbl_top = QLabel("Top 5 cortes mas largos")
         lbl_top.setStyleSheet("font-weight: bold; margin-top: 4px;")
         lay.addWidget(lbl_top)
 
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(
-            ["Inicio", "Fin", "Duración", "Horas"]
+            ["Inicio", "Fin", "Duracion", "Horas"]
         )
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
@@ -108,18 +119,22 @@ class AnalyticsTab(QWidget):
 
         self.refresh()
 
+    # ------------------------------------------------------------------
     def refresh(self):
         days = [7, 30, 90][self.cmb_range.currentIndex()]
 
-        # --- Datos ---
-        grid = cuts_heatmap(days)
-        top  = top_longest_cuts(days, top=5)
+        try:
+            grid = cuts_heatmap(days)
+            top  = top_longest_cuts(days, top=5)
+        except Exception as e:
+            log.warning(f"Error cargando datos de analitica: {e}")
+            grid = {h: [0] * 7 for h in range(24)}
+            top = []
 
-        # --- Gráficas ---
         self.chart_hours.plot(grid)
         self.chart_weekday.plot(grid)
 
-        # --- KPIs ---
+        # KPIs
         total_cortes = sum(sum(grid.get(h, [0] * 7)) for h in range(24))
 
         if top:
@@ -127,30 +142,27 @@ class AnalyticsTab(QWidget):
             dur_media = sum(duraciones) / len(duraciones)
             peor = top[0]["duracion_min"]
 
-            # Hora con más cortes
             horas_tot = [(h, sum(grid.get(h, [0] * 7))) for h in range(24)]
             horas_tot = [x for x in horas_tot if x[1] > 0]
             if horas_tot:
                 hora_pico, count_pico = max(horas_tot, key=lambda x: x[1])
-                self.kpi_peak.set(
-                    f"{hora_pico:02d}:00",
-                    f"{count_pico} cortes",
-                )
+                self.kpi_peak.set(f"{hora_pico:02d}:00", f"{count_pico} cortes")
             else:
-                self.kpi_peak.set("—")
+                self.kpi_peak.set("-")
 
             self.kpi_total.set(str(total_cortes))
             self.kpi_avg.set(f"{dur_media:.0f} min")
-            self.kpi_worst.set(
-                f"{peor:.0f} min" if peor < 120 else f"{peor/60:.1f} h"
-            )
+            if peor < 120:
+                self.kpi_worst.set(f"{peor:.0f} min")
+            else:
+                self.kpi_worst.set(f"{peor/60:.1f} h")
         else:
             self.kpi_total.set("0")
-            self.kpi_avg.set("—")
-            self.kpi_worst.set("—")
-            self.kpi_peak.set("—")
+            self.kpi_avg.set("-")
+            self.kpi_worst.set("-")
+            self.kpi_peak.set("-")
 
-        # --- Tabla top 5 ---
+        # Tabla
         self.table.setRowCount(len(top))
         for row, c in enumerate(top):
             dur = c["duracion_min"]
@@ -161,7 +173,6 @@ class AnalyticsTab(QWidget):
             i2 = QTableWidgetItem(dur_txt)
             i3 = QTableWidgetItem(f"{dur/60:.2f}")
 
-            # La duración en rojo si es larga
             if dur >= 60:
                 i2.setForeground(Qt.GlobalColor.red)
             elif dur >= 15:

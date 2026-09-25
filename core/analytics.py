@@ -1,23 +1,39 @@
 # core/analytics.py
+import logging
 from datetime import datetime, date, timedelta
+
 from core.database import Database
-from core.constants import EVENT_BOOT, EVENT_POWER_LOSS, EVENT_SHUTDOWN
+from core.constants import (
+    EVENT_BOOT, EVENT_POWER_LOSS,
+    EVENT_NET_DOWN, EVENT_NET_UP,
+)
+
+log = logging.getLogger(__name__)
 
 
+# ----------------------------------------------------------------------
+# Helpers
+# ----------------------------------------------------------------------
 def _parse(ts: str) -> datetime:
     return datetime.fromisoformat(ts)
 
 
+# ----------------------------------------------------------------------
+# MTBF / MTTR
+# ----------------------------------------------------------------------
 def compute_mtbf(days: int = 30) -> float:
     """
     Mean Time Between Failures (en horas).
-    Se calcula como el tiempo total entre eventos de fallo (POWER_LOSS).
+    Se calcula como el tiempo medio entre eventos POWER_LOSS consecutivos.
+    Devuelve 0.0 si hay menos de 2 cortes.
     """
     end = datetime.now()
     start = end - timedelta(days=days)
     events = Database.events_between(start, end)
 
-    fallos = [_parse(e["timestamp"]) for e in events if e["event"] == EVENT_POWER_LOSS]
+    fallos = [_parse(e["timestamp"]) for e in events
+              if e["event"] == EVENT_POWER_LOSS]
+
     if len(fallos) < 2:
         return 0.0
 
@@ -31,7 +47,7 @@ def compute_mtbf(days: int = 30) -> float:
 def compute_mttr(days: int = 30) -> float:
     """
     Mean Time To Recovery (en minutos).
-    Se calcula como el tiempo medio entre POWER_LOSS y el BOOT siguiente.
+    Tiempo medio entre POWER_LOSS y el BOOT siguiente.
     """
     end = datetime.now()
     start = end - timedelta(days=days)
@@ -50,26 +66,19 @@ def compute_mttr(days: int = 30) -> float:
     return sum(tiempos) / len(tiempos) if tiempos else 0.0
 
 
+# ----------------------------------------------------------------------
+# Disponibilidad / SLA
+# ----------------------------------------------------------------------
 def compute_availability(days: int = 30) -> dict:
     """
     Disponibilidad en el rango indicado.
-    Retorna:
-        {
-          "days": N,
-          "on_hours": X,
-          "off_hours": Y,
-          "availability_pct": Z,
-          "reboots": R,
-          "cuts": C,
-          "sla_995_ok": bool,   # cumple SLA 99.5 %
-          "sla_999_ok": bool,   # cumple SLA 99.9 %
-        }
+    Reutiliza summaries ya guardados; si algún día falta, lo calcula.
     """
     end = date.today()
     start = end - timedelta(days=days - 1)
 
-    # Sumar desde la tabla summaries; si algún día falta, calcularlo
-    from core.summary import build_summary
+    # Cargar todos los summaries del rango de una vez (mucho más rápido)
+    existing = {s["day"]: s for s in Database.summaries_between(start, end)}
 
     total_on = 0.0
     total_off = 0.0
@@ -78,13 +87,18 @@ def compute_availability(days: int = 30) -> dict:
 
     d = start
     while d <= end:
-        s = Database.get_summary(d)
+        key = d.isoformat()
+        s = existing.get(key)
         if s is None:
-            s = build_summary(d)
-        total_on += s["hours_on"]
-        total_off += s["hours_off"]
-        reboots += s["reboots"]
-        cuts += s["cuts"]
+            try:
+                from core.summary import build_summary
+                s = build_summary(d, persist=True)
+            except Exception:
+                s = {"hours_on": 0, "hours_off": 0, "reboots": 0, "cuts": 0}
+        total_on  += s["hours_on"] or 0
+        total_off += s["hours_off"] or 0
+        reboots   += s["reboots"] or 0
+        cuts      += s["cuts"] or 0
         d += timedelta(days=1)
 
     total = total_on + total_off
@@ -102,11 +116,13 @@ def compute_availability(days: int = 30) -> dict:
     }
 
 
-def cuts_heatmap(days: int = 30) -> dict[int, list[int]]:
+# ----------------------------------------------------------------------
+# Heatmap de cortes
+# ----------------------------------------------------------------------
+def cuts_heatmap(days: int = 30) -> dict:
     """
-    Devuelve un dict {hour: [conteo_por_dia_semana]}
-    donde día_semana 0=lunes, 6=domingo.
-    Sirve para dibujar un heatmap 24x7.
+    Devuelve {hour(0..23): [count_lun, ..., count_dom]}
+    lista para alimentar un heatmap 24×7.
     """
     end = datetime.now()
     start = end - timedelta(days=days)
@@ -116,13 +132,16 @@ def cuts_heatmap(days: int = 30) -> dict[int, list[int]]:
     for e in events:
         if e["event"] != EVENT_POWER_LOSS:
             continue
-        ts = _parse(e["timestamp"])
+        try:
+            ts = _parse(e["timestamp"])
+        except ValueError:
+            continue
         grid[ts.hour][ts.weekday()] += 1
     return grid
 
 
-def top_longest_cuts(days: int = 30, top: int = 5) -> list[dict]:
-    """Los cortes más largos del periodo, ordenados descendente."""
+def top_longest_cuts(days: int = 30, top: int = 5) -> list:
+    """Los cortes más largos del periodo."""
     end = datetime.now()
     start = end - timedelta(days=days)
     events = Database.events_between(start, end)
@@ -145,9 +164,10 @@ def top_longest_cuts(days: int = 30, top: int = 5) -> list[dict]:
     cortes.sort(key=lambda x: x["duracion_min"], reverse=True)
     return cortes[:top]
 
-from core.constants import EVENT_NET_DOWN, EVENT_NET_UP
 
-
+# ----------------------------------------------------------------------
+# Red
+# ----------------------------------------------------------------------
 def count_net_down(days: int = 30) -> int:
     end = datetime.now()
     start = end - timedelta(days=days)
@@ -156,51 +176,63 @@ def count_net_down(days: int = 30) -> int:
 
 
 def net_status_last(days: int = 7) -> dict:
+    """Estado global de la red (agregado de todos los hosts)."""
     start = datetime.now() - timedelta(days=days)
 
-    metrics = Database.metrics_since(start, limit=10_000)
-    if metrics:
-        last = metrics[0]
-        ok = bool(last["ping_ok"])
-        ping_ms = last["ping_ms"]
-        last_time = last["timestamp"]
-    else:
-        ok = False
-        ping_ms = None
-        last_time = "—"
+    latest = Database.latest_ping_per_host(hours=days * 24)
+    if not latest:
+        return {
+            "ok": False,
+            "last_ping_ms": None,
+            "last_time": "-",
+            "downs": count_net_down(days),
+            "uptime_pct": 0.0,
+        }
 
-    total = len(metrics)
-    ok_count = sum(1 for m in metrics if m["ping_ok"])
-    uptime_pct = (ok_count / total * 100) if total else 0.0
+    # El "estado global" se considera OK solo si TODOS los hosts responden
+    all_ok = all(bool(row["ping_ok"]) for row in latest.values())
+    # Latencia media de los hosts OK
+    pings_ok = [row["ping_ms"] for row in latest.values()
+                if row["ping_ok"] and row["ping_ms"] is not None]
+    avg_ping = sum(pings_ok) / len(pings_ok) if pings_ok else None
 
-    downs = count_net_down(days)
+    # Última marca temporal (del más reciente)
+    last_time = max(row["timestamp"] for row in latest.values())
+
+    # Uptime: % de lecturas OK en TODO el periodo (todos los hosts)
+    total_readings = 0
+    ok_readings = 0
+    for host in latest.keys():
+        metrics = Database.pings_for_host(host, hours=days * 24, limit=100_000)
+        total_readings += len(metrics)
+        ok_readings += sum(1 for m in metrics if m["ping_ok"])
+
+    uptime_pct = (ok_readings / total_readings * 100) if total_readings else 0.0
 
     return {
-        "ok": ok,
-        "last_ping_ms": ping_ms,
+        "ok": all_ok,
+        "last_ping_ms": avg_ping,
         "last_time": last_time,
-        "downs": downs,
+        "downs": count_net_down(days),
         "uptime_pct": uptime_pct,
     }
 
+
 def net_status_per_host(hours: int = 24) -> dict:
-    """
-    Devuelve {host: {"ok": bool, "ping_ms": float|None, "time": str,
-                     "uptime_pct": float, "downs": int}}
-    """
+    """Estado por host: {host: {...}}"""
     latest = Database.latest_ping_per_host(hours=hours)
     result = {}
 
     for host, last in latest.items():
-        metrics = Database.pings_for_host(host, hours=hours)
+        metrics = Database.pings_for_host(host, hours=hours, limit=100_000)
         total = len(metrics)
         ok_count = sum(1 for m in metrics if m["ping_ok"])
         uptime = (ok_count / total * 100) if total else 0.0
 
-        # Contar caídas (transiciones OK -> fallo)
+        # Caídas = transiciones OK→fallo
         downs = 0
         prev = None
-        for m in reversed(metrics):   # orden cronológico ascendente
+        for m in reversed(metrics):
             ok = bool(m["ping_ok"])
             if prev is True and ok is False:
                 downs += 1

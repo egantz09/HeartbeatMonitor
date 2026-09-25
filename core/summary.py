@@ -1,51 +1,79 @@
+# core/summary.py
+import logging
 from datetime import datetime, date, timedelta
+
 from core.database import Database
-from core.constants import EVENT_BOOT, EVENT_POWER_LOSS
+from core.constants import (
+    EVENT_BOOT, EVENT_SHUTDOWN, EVENT_POWER_LOSS,
+    EVENT_SUSPEND, EVENT_RESUME,
+)
+
+log = logging.getLogger(__name__)
 
 
-def build_summary(day: date):
-    """Calcula horas ON/OFF, reinicios y cortes para un día dado."""
+# Eventos que indican "equipo encendido"
+_ON_STARTS = {EVENT_BOOT, EVENT_RESUME}
+# Eventos que indican "equipo apagado"
+_ON_ENDS = {EVENT_SHUTDOWN, EVENT_POWER_LOSS, EVENT_SUSPEND}
+
+
+def build_summary(day: date, persist: bool = True) -> dict:
+    """
+    Calcula el resumen de un día:
+      - hours_on / hours_off
+      - reboots (BOOTs)
+      - cuts (POWER_LOSS)
+
+    Si `persist=True`, guarda el resultado en la tabla `summaries`.
+    """
     start = datetime.combine(day, datetime.min.time())
-    end   = datetime.combine(day + timedelta(days=1), datetime.min.time())
+    tomorrow = day + timedelta(days=1)
+    end = datetime.combine(tomorrow, datetime.min.time())
 
-    events = Database.events_between(start, end)
+    # Si el día es HOY, limitamos el cálculo a la hora actual
+    now = datetime.now()
+    is_today = (day == now.date())
+    effective_end = now if is_today else end
 
-    # Tiempo ON = suma de intervalos entre HEARTBEATs consecutivos (≤ umbral)
-    from core.constants import POWER_LOSS_THRESHOLD
-    heartbeats = [
-        datetime.fromisoformat(e["timestamp"])
-        for e in events if e["event"] == "HEARTBEAT"
-    ]
-    # Nota: heartbeat no se persiste; usamos BOOT/RESUME como "inicio on"
-    # y SHUTDOWN/POWER_LOSS/SUSPEND como "fin on".
-    on_starts = {"BOOT", "RESUME"}
-    on_ends   = {"SHUTDOWN", "POWER_LOSS", "SUSPEND"}
+    events = Database.events_between(start, effective_end)
 
     total_on = timedelta()
     last_on = None
+
     for e in events:
         ts = datetime.fromisoformat(e["timestamp"])
-        if e["event"] in on_starts:
+        ev = e["event"]
+
+        if ev in _ON_STARTS:
             last_on = ts
-        elif e["event"] in on_ends and last_on:
+        elif ev in _ON_ENDS and last_on is not None:
             total_on += ts - last_on
             last_on = None
 
-    # Si seguimos "on" al final del día, contar hasta 'end'
-    if last_on:
-        total_on += end - last_on
+    # Si seguimos "ON" al final del periodo
+    if last_on is not None:
+        total_on += effective_end - last_on
 
-    hours_on  = total_on.total_seconds() / 3600
-    hours_off = 24 - hours_on
+    hours_on = total_on.total_seconds() / 3600
+    # Horas OFF: desde el inicio del día hasta ahora (o 24 h si es pasado)
+    elapsed_hours = (effective_end - start).total_seconds() / 3600
+    hours_off = max(0.0, elapsed_hours - hours_on)
 
     reboots = Database.count_events(EVENT_BOOT, day)
-    cuts    = Database.count_events(EVENT_POWER_LOSS, day)
+    cuts = Database.count_events(EVENT_POWER_LOSS, day)
 
-    Database.save_summary(day, hours_on, hours_off, reboots, cuts)
-    return {
+    result = {
         "day": day,
         "hours_on": hours_on,
         "hours_off": hours_off,
         "reboots": reboots,
         "cuts": cuts,
     }
+
+    if persist:
+        try:
+            Database.save_summary(day, hours_on, hours_off, reboots, cuts)
+        except Exception as e:
+            log.warning(f"No se pudo guardar summary de {day}: {e}")
+
+    return result

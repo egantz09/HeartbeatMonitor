@@ -1,11 +1,22 @@
 # ui/tray.py
+"""
+Icono de bandeja del sistema con menú contextual.
+"""
+import logging
 from pathlib import Path
 
 from PyQt6.QtWidgets import QSystemTrayIcon, QMenu
 from PyQt6.QtGui import QIcon, QAction, QPixmap, QPainter, QColor, QBrush, QPen
 from PyQt6.QtCore import Qt, QPoint
 
+from core.constants import ASSETS_DIR, APP_NAME, APP_AUTHOR, APP_CREDIT
 
+log = logging.getLogger(__name__)
+
+
+# ----------------------------------------------------------------------
+# Ícono
+# ----------------------------------------------------------------------
 def _fallback_icon() -> QIcon:
     """Ícono generado en memoria. Nunca es nulo."""
     size = 64
@@ -43,10 +54,15 @@ def _fallback_icon() -> QIcon:
 
 
 def _load_icon() -> QIcon:
-    """Intenta cargar assets/icon.*, si falla devuelve el fallback en memoria."""
-    base = Path(__file__).resolve().parent.parent
-    for name in ("icon.ico", "icon.png"):
-        path = base / "assets" / name
+    """
+    Intenta cargar assets/icon.ico o assets/icon.png.
+    Si fallan, genera uno en memoria.
+    """
+    candidates = [
+        ASSETS_DIR / "icon.ico",
+        ASSETS_DIR / "icon.png",
+    ]
+    for path in candidates:
         if path.exists():
             icon = QIcon(str(path))
             if not icon.isNull():
@@ -54,6 +70,9 @@ def _load_icon() -> QIcon:
     return _fallback_icon()
 
 
+# ----------------------------------------------------------------------
+# TrayIcon
+# ----------------------------------------------------------------------
 class TrayIcon(QSystemTrayIcon):
 
     def __init__(self, window, parent=None):
@@ -61,24 +80,44 @@ class TrayIcon(QSystemTrayIcon):
         self._window = window
 
         menu = QMenu()
+
+        # Cabecera no clickable
+        header = QAction(f"{APP_NAME} - {APP_AUTHOR}", self)
+        header.setEnabled(False)
+        menu.addAction(header)
+        menu.addSeparator()
+
+        # Mostrar
         act_show = QAction("Mostrar", self)
         act_show.triggered.connect(self._show_window)
         menu.addAction(act_show)
 
-        act_report = QAction("Exportar mes actual…", self)
+        # Exportar
+        act_report = QAction("Exportar Excel del mes...", self)
         act_report.triggered.connect(window.export_current_month)
         menu.addAction(act_report)
 
+        act_pdf = QAction("Exportar PDF del mes...", self)
+        act_pdf.triggered.connect(window.export_pdf_month)
+        menu.addAction(act_pdf)
+
         menu.addSeparator()
 
+        # Acerca de
+        act_about = QAction("Acerca de...", self)
+        act_about.triggered.connect(window.show_about)
+        menu.addAction(act_about)
+
+        # Salir
         act_quit = QAction("Salir", self)
         act_quit.triggered.connect(window.quit_app)
         menu.addAction(act_quit)
 
         self.setContextMenu(menu)
         self.activated.connect(self._on_activated)
-        self.setToolTip("HeartbeatMonitor — activo")
+        self.setToolTip(f"{APP_NAME}\n{APP_CREDIT}")
 
+    # ------------------------------------------------------------------
     def _on_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
             self._show_window()

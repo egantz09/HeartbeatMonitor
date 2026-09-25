@@ -1,13 +1,19 @@
 # ui/tabs/config_tab.py
+"""
+Configuracion general, hosts de ping y toggles.
+"""
+import logging
+
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit,
-    QSpinBox, QDoubleSpinBox, QCheckBox, QPushButton, QLabel,
-    QComboBox, QListWidget, QListWidgetItem, QMessageBox,
-    QInputDialog,
+    QSpinBox, QCheckBox, QPushButton, QLabel, QComboBox,
+    QListWidget, QListWidgetItem, QMessageBox, QInputDialog,
+    QGroupBox,
 )
-from PyQt6.QtCore import Qt
 
 from core.config import Config
+
+log = logging.getLogger(__name__)
 
 
 class ConfigTab(QWidget):
@@ -17,12 +23,15 @@ class ConfigTab(QWidget):
         self._build_ui()
         self._load()
 
+    # ------------------------------------------------------------------
     def _build_ui(self):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(10, 10, 10, 10)
+        lay.setSpacing(12)
 
-        # --- Formulario general ---
-        form = QFormLayout()
+        # ---------- General ----------
+        grp_gen = QGroupBox("General")
+        form = QFormLayout(grp_gen)
 
         self.cmb_theme = QComboBox()
         self.cmb_theme.addItems(["dark", "light"])
@@ -43,78 +52,80 @@ class ConfigTab(QWidget):
         self.spn_ping.setSuffix(" s")
         form.addRow("Intervalo entre pings:", self.spn_ping)
 
-        lay.addLayout(form)
+        lay.addWidget(grp_gen)
 
-        # --- Lista de hosts ---
-        lbl_hosts = QLabel("Hosts a monitorear (ping):")
-        lbl_hosts.setStyleSheet("font-weight: bold; margin-top: 10px;")
-        lay.addWidget(lbl_hosts)
+        # ---------- Hosts ----------
+        grp_hosts = QGroupBox("Hosts a monitorear (ping)")
+        vl = QVBoxLayout(grp_hosts)
 
         self.lst_hosts = QListWidget()
         self.lst_hosts.setMaximumHeight(160)
-        lay.addWidget(self.lst_hosts)
+        vl.addWidget(self.lst_hosts)
 
-        # Botones de gestión de hosts
         btn_row = QHBoxLayout()
-        btn_add = QPushButton("Añadir")
-        btn_add.clicked.connect(self._add_host)
-        btn_edit = QPushButton("Editar")
-        btn_edit.clicked.connect(self._edit_host)
-        btn_del = QPushButton("Eliminar")
-        btn_del.clicked.connect(self._del_host)
-        btn_row.addWidget(btn_add)
-        btn_row.addWidget(btn_edit)
-        btn_row.addWidget(btn_del)
+        self.btn_add = QPushButton("Anadir")
+        self.btn_add.clicked.connect(self._add_host)
+        self.btn_edit = QPushButton("Editar")
+        self.btn_edit.clicked.connect(self._edit_host)
+        self.btn_del = QPushButton("Eliminar")
+        self.btn_del.clicked.connect(self._del_host)
+        btn_row.addWidget(self.btn_add)
+        btn_row.addWidget(self.btn_edit)
+        btn_row.addWidget(self.btn_del)
         btn_row.addStretch()
-        lay.addLayout(btn_row)
+        vl.addLayout(btn_row)
 
-        # --- Botón guardar ---
-        btn_save = QPushButton("Guardar")
-        btn_save.clicked.connect(self._save)
-        lay.addWidget(btn_save)
+        lay.addWidget(grp_hosts)
+
+        # ---------- Guardar ----------
+        self.btn_save = QPushButton("Guardar")
+        self.btn_save.clicked.connect(self._save)
+        lay.addWidget(self.btn_save)
 
         self.lbl_info = QLabel("")
         self.lbl_info.setStyleSheet("color: #888;")
         lay.addWidget(self.lbl_info)
         lay.addStretch()
-    # ------------------------------------------------------------------
-
-    def _on_ping_toggled(self, checked: bool):
-        """Habilita o deshabilita los controles de ping según el toggle."""
-        self.spn_ping.setEnabled(checked)
-        self.lst_hosts.setEnabled(checked)
-        # Los botones de la lista también:
-        for b in self.findChildren(QPushButton):
-            if b.text() in ("Añadir", "Editar", "Eliminar"):
-                b.setEnabled(checked)
 
     # ------------------------------------------------------------------
     def _load(self):
         cfg = Config.load()
+
         self.cmb_theme.setCurrentText(cfg.get("theme", "dark"))
         self.chk_notif.setChecked(cfg.get("notifications_enabled", True))
         self.chk_evlog.setChecked(cfg.get("read_event_log", True))
-        self.spn_ping.setValue(int(cfg.get("ping_interval", 60)))
         self.chk_ping.setChecked(cfg.get("ping_enabled", True))
-        self._on_ping_toggled(cfg.get("ping_enabled", True))
+        self.spn_ping.setValue(int(cfg.get("ping_interval", 60)))
 
         self.lst_hosts.clear()
         for h in cfg.get("ping_hosts", []):
             self.lst_hosts.addItem(QListWidgetItem(h))
 
+        self._on_ping_toggled(self.chk_ping.isChecked())
+
+    # ------------------------------------------------------------------
+    def _on_ping_toggled(self, checked: bool):
+        """Habilita/deshabilita los controles relacionados con ping."""
+        self.spn_ping.setEnabled(checked)
+        self.lst_hosts.setEnabled(checked)
+        self.btn_add.setEnabled(checked)
+        self.btn_edit.setEnabled(checked)
+        self.btn_del.setEnabled(checked)
+
     # ------------------------------------------------------------------
     def _add_host(self):
         text, ok = QInputDialog.getText(
-            self, "Añadir host",
+            self, "Anadir host",
             "IP o dominio (ej. 8.8.8.8, google.com):"
         )
         if ok and text.strip():
             text = text.strip()
-            # Evitar duplicados
             for i in range(self.lst_hosts.count()):
                 if self.lst_hosts.item(i).text() == text:
-                    QMessageBox.warning(self, "Duplicado",
-                                        f"'{text}' ya está en la lista.")
+                    QMessageBox.warning(
+                        self, "Duplicado",
+                        f"'{text}' ya esta en la lista."
+                    )
                     return
             self.lst_hosts.addItem(QListWidgetItem(text))
 
@@ -130,10 +141,8 @@ class ConfigTab(QWidget):
 
     def _del_host(self):
         item = self.lst_hosts.currentItem()
-        if not item:
-            return
-        row = self.lst_hosts.row(item)
-        self.lst_hosts.takeItem(row)
+        if item:
+            self.lst_hosts.takeItem(self.lst_hosts.row(item))
 
     # ------------------------------------------------------------------
     def _save(self):
@@ -146,12 +155,12 @@ class ConfigTab(QWidget):
         Config.set("theme", self.cmb_theme.currentText())
         Config.set("notifications_enabled", self.chk_notif.isChecked())
         Config.set("read_event_log", self.chk_evlog.isChecked())
+        Config.set("ping_enabled", self.chk_ping.isChecked())
         Config.set("ping_interval", self.spn_ping.value())
         Config.set("ping_hosts", hosts)
-        Config.set("ping_enabled", self.chk_ping.isChecked())
 
-        self.lbl_info.setText(
-            "Guardado. Los cambios de pings se aplican en el próximo ciclo."
+        self.lbl_info.setText("Configuracion guardada.")
+        QMessageBox.information(
+            self, "Configuracion",
+            "Configuracion guardada correctamente."
         )
-        QMessageBox.information(self, "Configuración",
-                                "Configuración guardada correctamente.")

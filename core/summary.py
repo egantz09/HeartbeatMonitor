@@ -39,6 +39,8 @@ def build_summary(day: date, persist: bool = True) -> dict:
 
     total_on = timedelta()
     last_on = None
+    reboots = 0
+    cuts = 0
 
     for e in events:
         ts = datetime.fromisoformat(e["timestamp"])
@@ -46,9 +48,14 @@ def build_summary(day: date, persist: bool = True) -> dict:
 
         if ev in _ON_STARTS:
             last_on = ts
+            if ev == EVENT_BOOT:
+                reboots += 1
         elif ev in _ON_ENDS and last_on is not None:
             total_on += ts - last_on
             last_on = None
+
+        if ev == EVENT_POWER_LOSS:
+            cuts += 1
 
     # Si seguimos "ON" al final del periodo
     if last_on is not None:
@@ -58,9 +65,6 @@ def build_summary(day: date, persist: bool = True) -> dict:
     # Horas OFF: desde el inicio del día hasta ahora (o 24 h si es pasado)
     elapsed_hours = (effective_end - start).total_seconds() / 3600
     hours_off = max(0.0, elapsed_hours - hours_on)
-
-    reboots = Database.count_events(EVENT_BOOT, day)
-    cuts = Database.count_events(EVENT_POWER_LOSS, day)
 
     result = {
         "day": day,

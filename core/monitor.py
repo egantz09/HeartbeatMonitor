@@ -4,6 +4,7 @@ from datetime import datetime
 
 from core.state_manager import StateManager
 from core.database import Database
+from core.config import Config
 from core.constants import (
     EVENT_BOOT, EVENT_POWER_LOSS, EVENT_KERNEL_POWER,
     POWER_LOSS_THRESHOLD,
@@ -37,9 +38,9 @@ class HeartbeatMonitor:
             power_loss = True
             offline_str = self._fmt_seconds(offline_secs)
 
-        # --- Fuente 2: Event Log de Windows ---
+        # --- Fuente 2: Event Log de Windows (si el usuario lo activó) ---
         kernel_event = None
-        if event_log.is_available():
+        if Config.get("read_event_log", True) and event_log.is_available():
             try:
                 kernel_event = event_log.detect_power_loss_since_last_boot()
             except Exception as e:

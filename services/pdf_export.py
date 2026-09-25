@@ -99,14 +99,22 @@ def _range_bounds(start: date, end: date):
     )
 
 
-def _build_daily_rows(start_dt: datetime, end_dt: datetime):
+def _load_summaries(start_dt: datetime, end_dt: datetime) -> dict:
+    """Resúmenes del rango en una sola consulta, indexados por día."""
+    d0 = start_dt.date()
+    d1 = (end_dt - timedelta(seconds=1)).date()
+    return {s["day"]: s for s in Database.summaries_between(d0, d1)}
+
+
+def _build_daily_rows(start_dt: datetime, end_dt: datetime,
+                      summaries: dict) -> list:
     """Filas de la tabla resumen día a día."""
     rows = []
     d = start_dt.date()
     last = (end_dt - timedelta(seconds=1)).date()
 
     while d <= last:
-        s = Database.get_summary(d)
+        s = summaries.get(d.isoformat())
         if s:
             hours_on = s["hours_on"] or 0
             hours_off = s["hours_off"] or 0
@@ -129,7 +137,8 @@ def _build_daily_rows(start_dt: datetime, end_dt: datetime):
     return rows
 
 
-def _compute_totals(start_dt: datetime, end_dt: datetime):
+def _compute_totals(start_dt: datetime, end_dt: datetime,
+                    summaries: dict) -> dict:
     """Totales agregados del rango."""
     total_on = 0.0
     total_off = 0.0
@@ -140,7 +149,7 @@ def _compute_totals(start_dt: datetime, end_dt: datetime):
     d = start_dt.date()
     last = (end_dt - timedelta(seconds=1)).date()
     while d <= last:
-        s = Database.get_summary(d)
+        s = summaries.get(d.isoformat())
         if s:
             dias += 1
             total_on  += s["hours_on"] or 0
@@ -188,7 +197,8 @@ def _build_pdf(filename, title, subtitle, start_dt, end_dt, footer_range=""):
     ))
     story.append(Spacer(1, 6))
 
-    totals = _compute_totals(start_dt, end_dt)
+    summaries = _load_summaries(start_dt, end_dt)
+    totals = _compute_totals(start_dt, end_dt, summaries)
 
     resumen_data = [
         ["Métrica", "Valor"],
@@ -216,7 +226,7 @@ def _build_pdf(filename, title, subtitle, start_dt, end_dt, footer_range=""):
 
     # --- Detalle por día ---
     story.append(Paragraph("Detalle por día", STYLE_H2))
-    rows = _build_daily_rows(start_dt, end_dt)
+    rows = _build_daily_rows(start_dt, end_dt, summaries)
     header = ["Fecha", "Día", "ON (h)", "OFF (h)",
               "Uptime", "Reinicios", "Cortes"]
     day_table = Table(

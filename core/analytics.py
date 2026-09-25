@@ -29,10 +29,10 @@ def compute_mtbf(days: int = 30) -> float:
     """
     end = datetime.now()
     start = end - timedelta(days=days)
-    events = Database.events_between(start, end)
+    # Solo los eventos necesarios, filtrados en SQL
+    events = Database.events_of_types_between((EVENT_POWER_LOSS,), start, end)
 
-    fallos = [_parse(e["timestamp"]) for e in events
-              if e["event"] == EVENT_POWER_LOSS]
+    fallos = [_parse(e["timestamp"]) for e in events]
 
     if len(fallos) < 2:
         return 0.0
@@ -51,7 +51,9 @@ def compute_mttr(days: int = 30) -> float:
     """
     end = datetime.now()
     start = end - timedelta(days=days)
-    events = Database.events_between(start, end)
+    events = Database.events_of_types_between(
+        (EVENT_POWER_LOSS, EVENT_BOOT), start, end
+    )
 
     tiempos = []
     fallo_ts = None
@@ -126,12 +128,10 @@ def cuts_heatmap(days: int = 30) -> dict:
     """
     end = datetime.now()
     start = end - timedelta(days=days)
-    events = Database.events_between(start, end)
+    events = Database.events_of_types_between((EVENT_POWER_LOSS,), start, end)
 
     grid = {h: [0] * 7 for h in range(24)}
     for e in events:
-        if e["event"] != EVENT_POWER_LOSS:
-            continue
         try:
             ts = _parse(e["timestamp"])
         except ValueError:
@@ -144,7 +144,9 @@ def top_longest_cuts(days: int = 30, top: int = 5) -> list:
     """Los cortes más largos del periodo."""
     end = datetime.now()
     start = end - timedelta(days=days)
-    events = Database.events_between(start, end)
+    events = Database.events_of_types_between(
+        (EVENT_POWER_LOSS, EVENT_BOOT), start, end
+    )
 
     cortes = []
     fallo_ts = None
@@ -171,8 +173,7 @@ def top_longest_cuts(days: int = 30, top: int = 5) -> list:
 def count_net_down(days: int = 30) -> int:
     end = datetime.now()
     start = end - timedelta(days=days)
-    events = Database.events_between(start, end)
-    return sum(1 for e in events if e["event"] == EVENT_NET_DOWN)
+    return Database.count_events_between(EVENT_NET_DOWN, start, end)
 
 
 def net_status_last(days: int = 7) -> dict:
@@ -199,13 +200,13 @@ def net_status_last(days: int = 7) -> dict:
     # Última marca temporal (del más reciente)
     last_time = max(row["timestamp"] for row in latest.values())
 
-    # Uptime: % de lecturas OK en TODO el periodo (todos los hosts)
+    # Uptime: % de lecturas OK en TODO el periodo (agregado en SQL)
     total_readings = 0
     ok_readings = 0
     for host in latest.keys():
-        metrics = Database.pings_for_host(host, hours=days * 24, limit=100_000)
-        total_readings += len(metrics)
-        ok_readings += sum(1 for m in metrics if m["ping_ok"])
+        stats = Database.ping_stats_between(host, start, datetime.now())
+        total_readings += stats["total"]
+        ok_readings += stats["ok_count"]
 
     uptime_pct = (ok_readings / total_readings * 100) if total_readings else 0.0
 
@@ -219,32 +220,22 @@ def net_status_last(days: int = 7) -> dict:
 
 
 def net_status_per_host(hours: int = 24) -> dict:
-    """Estado por host: {host: {...}}"""
+    """Estado por host: {host: {...}} — agregados calculados en SQL."""
     latest = Database.latest_ping_per_host(hours=hours)
     result = {}
+    start = datetime.now() - timedelta(hours=hours)
 
     for host, last in latest.items():
-        metrics = Database.pings_for_host(host, hours=hours, limit=100_000)
-        total = len(metrics)
-        ok_count = sum(1 for m in metrics if m["ping_ok"])
-        uptime = (ok_count / total * 100) if total else 0.0
-
-        # Caídas = transiciones OK→fallo
-        downs = 0
-        prev = None
-        for m in reversed(metrics):
-            ok = bool(m["ping_ok"])
-            if prev is True and ok is False:
-                downs += 1
-            prev = ok
+        stats = Database.ping_stats_between(host, start, datetime.now())
+        downs = Database.ping_downs_between(host, start, datetime.now())
 
         result[host] = {
             "ok": bool(last["ping_ok"]),
             "ping_ms": last["ping_ms"],
             "time": last["timestamp"],
-            "uptime_pct": uptime,
+            "uptime_pct": stats["uptime_pct"],
             "downs": downs,
-            "total_lecturas": total,
+            "total_lecturas": stats["total"],
         }
 
     return result

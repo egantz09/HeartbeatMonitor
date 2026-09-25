@@ -18,7 +18,6 @@ from core.constants import (
     APP_NAME, APP_AUTHOR, APP_EMAIL, APP_VERSION,
 )
 from core.config import Config
-from core.database import Database
 from core.monitor import HeartbeatMonitor
 from core.startup import enable_startup
 from core.shutdown_handler import install as install_shutdown_handler
@@ -130,13 +129,7 @@ def main():
         logging.warning(f"No se pudo configurar autoarranque: {e}")
     app.processEvents()
 
-    # --- Base de datos ---
-    try:
-        Database.init()
-        Database.init_ping()
-    except Exception as e:
-        logging.error(f"Error inicializando base de datos: {e}")
-    app.processEvents()
+    # --- Base de datos: se inicializa dentro de HeartbeatMonitor ---
 
     # --- Filtro de eventos de energia (suspension / reanudacion) ---
     try:
@@ -198,6 +191,12 @@ def main():
     )
     # Importante: guardar referencia para que el GC no destruya el worker
     window._worker = worker
+
+    # Cambiar el intervalo de ping desde Configuración no requiere reiniciar
+    window.tab_config.config_saved.connect(worker._reschedule_ping)
+
+    # Cierre ordenado del hilo de pings
+    app.aboutToQuit.connect(worker.shutdown)
 
     sys.exit(app.exec())
 

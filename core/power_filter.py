@@ -56,10 +56,17 @@ class PowerEventFilter(QAbstractNativeEventFilter):
         return False, 0
 
 
+# Qt no toma posesión del filtro: hay que mantener una referencia o el
+# objeto se destruye al salir de install() y deja de recibir eventos.
+_filter = None
+
+
 def install(app):
     """Instala el filtro de eventos nativos."""
+    global _filter
     try:
-        app.installNativeEventFilter(PowerEventFilter())
+        _filter = PowerEventFilter()
+        app.installNativeEventFilter(_filter)
         log.info("Power event filter instalado")
     except Exception as e:
         log.warning(f"No se pudo instalar power_filter: {e}")

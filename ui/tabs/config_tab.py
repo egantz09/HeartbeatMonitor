@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem, QMessageBox, QInputDialog,
     QGroupBox,
 )
+from PyQt6.QtCore import pyqtSignal
 
 from core.config import Config
 
@@ -17,6 +18,10 @@ log = logging.getLogger(__name__)
 
 
 class ConfigTab(QWidget):
+
+    # Emitida al guardar: permite a otros componentes recargarse
+    # (p. ej. reprogramar el intervalo de pings) sin reiniciar la app.
+    config_saved = pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -160,6 +165,7 @@ class ConfigTab(QWidget):
         Config.set("ping_hosts", hosts)
 
         self.lbl_info.setText("Configuracion guardada.")
+        self.config_saved.emit()
         QMessageBox.information(
             self, "Configuracion",
             "Configuracion guardada correctamente."

@@ -235,6 +235,10 @@ class MetricsTab(QWidget):
 
     # ------------------------------------------------------------------
     def refresh(self):
+        # No consultar la base de datos si la pestaña no está a la vista
+        if not self.isVisible():
+            return
+
         if not Config.get("ping_enabled", True):
             self._show_disabled_message()
             return
@@ -247,7 +251,7 @@ class MetricsTab(QWidget):
 
         start_dt, end_dt = self._get_range()
 
-        # Tarjetas
+        # Tarjetas (agregados en SQL, barato)
         try:
             info = net_status_per_host(hours=24)
         except Exception as e:
@@ -265,38 +269,33 @@ class MetricsTab(QWidget):
                 )
                 card.lbl_sub.setText("")
 
-        # Graficas
+        # Graficas: el rango se filtra en SQL y la serie viene muestreada
         last_time = None
         for host, chart in self._host_charts.items():
             try:
-                metrics = Database.pings_for_host(
-                    host, hours=24 * 30, limit=100_000
+                metrics = Database.pings_between_sampled(
+                    host, start_dt, end_dt
                 )
             except Exception as e:
                 log.warning(f"Error leyendo pings de {host}: {e}")
                 metrics = []
 
-            filtrados = [
-                m for m in metrics
-                if start_dt <= datetime.fromisoformat(m["timestamp"]) <= end_dt
-            ]
-
-            if not filtrados:
+            if not metrics:
                 chart.plot([], [])
                 continue
 
-            cron = list(reversed(filtrados))
-            xs = [datetime.fromisoformat(m["timestamp"]) for m in cron]
+            xs = [datetime.fromisoformat(m["timestamp"]) for m in metrics]
             ys = [m["ping_ms"] if m["ping_ms"] is not None else 0
-                  for m in cron]
-            fails = [xs[i] for i, m in enumerate(cron) if not m["ping_ok"]]
+                  for m in metrics]
+            fail_idx = [i for i, m in enumerate(metrics) if not m["ping_ok"]]
 
             max_ping = max(ys) if ys else 0
             chart.y_max = max(200, int(max_ping * 1.2))
-            chart.plot(xs, ys, ping_fail_xs=fails)
+            chart.plot(xs, ys, fail_indices=fail_idx)
 
-            if filtrados:
-                last_time = filtrados[0]["timestamp"]
+            ts = metrics[-1]["timestamp"]
+            if last_time is None or ts > last_time:
+                last_time = ts
 
         if last_time:
             self.lbl_last.setText(f"Ultima lectura: {last_time}")

@@ -1,5 +1,6 @@
 # core/database.py
 import sqlite3
+import threading
 from datetime import datetime, date, timedelta
 from contextlib import contextmanager
 
@@ -8,22 +9,33 @@ from core.constants import DB_FILE
 
 class Database:
 
-    @staticmethod
+    # Conexión persistente por hilo: sqlite3 no permite compartir una
+    # conexión entre hilos y abrir una conexión por operación es caro.
+    _local = threading.local()
+
+    @classmethod
+    def _connection(cls) -> sqlite3.Connection:
+        conn = getattr(cls._local, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(DB_FILE, timeout=10)
+            conn.row_factory = sqlite3.Row
+            try:
+                conn.execute("PRAGMA synchronous=NORMAL")
+            except sqlite3.DatabaseError:
+                pass
+            cls._local.conn = conn
+        return conn
+
+    @classmethod
     @contextmanager
-    def _conn():
-        conn = sqlite3.connect(DB_FILE, timeout=10)
-        conn.row_factory = sqlite3.Row
-        # WAL mejora concurrencia lectura/escritura
-        try:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
-        except sqlite3.DatabaseError:
-            pass
+    def _conn(cls):
+        conn = cls._connection()
         try:
             yield conn
             conn.commit()
-        finally:
-            conn.close()
+        except Exception:
+            conn.rollback()
+            raise
 
     # ------------------------------------------------------------------
     # Init
@@ -31,6 +43,12 @@ class Database:
     @classmethod
     def init(cls):
         with cls._conn() as c:
+            # WAL mejora la concurrencia lectura/escritura y es persistente
+            # en el fichero: basta con activarlo una vez.
+            try:
+                c.execute("PRAGMA journal_mode=WAL")
+            except sqlite3.DatabaseError:
+                pass
             c.execute("""
                 CREATE TABLE IF NOT EXISTS events (
                     id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,6 +84,11 @@ class Database:
             """)
             c.execute("CREATE INDEX IF NOT EXISTS idx_ping_ts ON ping_metrics(timestamp)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_ping_host ON ping_metrics(host)")
+            # Índice compuesto para las consultas por host + rango de fechas
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ping_host_ts "
+                "ON ping_metrics(host, timestamp)"
+            )
 
     # ------------------------------------------------------------------
     # Eventos
@@ -135,6 +158,29 @@ class Database:
                 "duration_seconds": dur,
             })
         return result
+
+    @classmethod
+    def events_of_types_between(cls, event_types, start: datetime, end: datetime):
+        """Eventos de los tipos indicados en el rango (solo timestamp y event)."""
+        placeholders = ",".join("?" * len(event_types))
+        with cls._conn() as c:
+            rows = c.execute(
+                f"SELECT timestamp, event FROM events "
+                f"WHERE event IN ({placeholders}) "
+                f"AND timestamp BETWEEN ? AND ? ORDER BY timestamp",
+                (*event_types, start.isoformat(), end.isoformat()),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    @classmethod
+    def count_events_between(cls, event: str, start: datetime, end: datetime) -> int:
+        with cls._conn() as c:
+            row = c.execute(
+                "SELECT COUNT(*) AS n FROM events "
+                "WHERE event=? AND timestamp BETWEEN ? AND ?",
+                (event, start.isoformat(), end.isoformat()),
+            ).fetchone()
+        return row["n"] if row else 0
 
     @classmethod
     def count_events(cls, event: str, day: date) -> int:
@@ -210,12 +256,71 @@ class Database:
         start = datetime.now() - timedelta(hours=hours)
         with cls._conn() as c:
             rows = c.execute(
-                "SELECT * FROM ping_metrics "
+                "SELECT timestamp, ping_ms, ping_ok FROM ping_metrics "
                 "WHERE host=? AND timestamp >= ? "
                 "ORDER BY timestamp DESC LIMIT ?",
                 (host, start.isoformat(), limit),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    @classmethod
+    def pings_between_sampled(cls, host: str, start: datetime, end: datetime,
+                              max_points: int = 1500) -> list:
+        """
+        Serie (timestamp, ping_ms, ping_ok) de un host en el rango, ASC.
+        Si hay más de `max_points` lecturas, muestrea en SQL para que las
+        gráficas no manejen decenas de miles de puntos.
+        """
+        base = "FROM ping_metrics WHERE host=? AND timestamp BETWEEN ? AND ?"
+        params = (host, start.isoformat(), end.isoformat())
+        with cls._conn() as c:
+            total = c.execute(f"SELECT COUNT(*) {base}", params).fetchone()[0]
+            if total == 0:
+                return []
+            step = max(1, total // max_points)
+            rows = c.execute(
+                "SELECT timestamp, ping_ms, ping_ok FROM ("
+                "  SELECT timestamp, ping_ms, ping_ok,"
+                "         ROW_NUMBER() OVER (ORDER BY timestamp) AS rn"
+                f"  {base}"
+                ") WHERE (rn - 1) % ? = 0 ORDER BY rn",
+                (*params, step),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    @classmethod
+    def ping_stats_between(cls, host: str, start: datetime, end: datetime) -> dict:
+        """Agregados de un host en el rango, calculados en SQL."""
+        with cls._conn() as c:
+            row = c.execute(
+                "SELECT COUNT(*) AS total,"
+                "       COALESCE(SUM(ping_ok), 0) AS ok_count "
+                "FROM ping_metrics "
+                "WHERE host=? AND timestamp BETWEEN ? AND ?",
+                (host, start.isoformat(), end.isoformat()),
+            ).fetchone()
+        total = row["total"] or 0
+        ok_count = row["ok_count"] or 0
+        return {
+            "total": total,
+            "ok_count": ok_count,
+            "uptime_pct": (ok_count / total * 100) if total else 0.0,
+        }
+
+    @classmethod
+    def ping_downs_between(cls, host: str, start: datetime, end: datetime) -> int:
+        """Transiciones OK→fallo de un host en el rango (LAG en SQL)."""
+        with cls._conn() as c:
+            row = c.execute(
+                "SELECT COUNT(*) AS n FROM ("
+                "  SELECT ping_ok,"
+                "         LAG(ping_ok) OVER (ORDER BY timestamp, id) AS prev"
+                "  FROM ping_metrics"
+                "  WHERE host=? AND timestamp BETWEEN ? AND ?"
+                ") WHERE prev=1 AND ping_ok=0",
+                (host, start.isoformat(), end.isoformat()),
+            ).fetchone()
+        return row["n"] if row else 0
 
     @classmethod
     def latest_ping_per_host(cls, hours: int = 24):

@@ -157,7 +157,9 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    # UPX desactivado: los .exe empaquetados con UPX disparan falsos
+    # positivos de antivirus con mucha frecuencia.
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,

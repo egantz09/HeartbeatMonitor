@@ -73,10 +73,14 @@ def read_recent_events(hours: int = 24, event_ids: tuple = None) -> list:
                     stop = True
                     break
 
-                if rec.EventID in event_ids:
+                # El EventID bruto incluye bits de severidad en la palabra
+                # alta (p. ej. Kernel-Power 41 llega como 0x80000029):
+                # hay que enmascarar para comparar con el ID real.
+                event_id = rec.EventID & 0xFFFF
+                if event_id in event_ids:
                     eventos.append({
                         "time": ts,
-                        "event_id": rec.EventID,
+                        "event_id": event_id,
                         "source": rec.SourceName or "",
                     })
 

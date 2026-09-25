@@ -10,6 +10,7 @@ Clases:
 """
 from datetime import date, datetime, timedelta
 
+import matplotlib.dates as mdates
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
@@ -62,12 +63,17 @@ class UptimeChart(FigureCanvasQTAgg):
     def plot_days(self, days: int = 14):
         today = date.today()
         now_hours = self._elapsed_hours_today()
+        start = today - timedelta(days=days - 1)
+
+        # Una sola consulta para todo el rango (en vez de una por día)
+        existing = {s["day"]: s for s in Database.summaries_between(start, today)}
 
         data = []
         for i in range(days - 1, -1, -1):
             d = today - timedelta(days=i)
 
             if d == today:
+                # El resumen de hoy se recalcula hasta la hora actual
                 s = build_summary(d)
                 if s and now_hours > 0.05:
                     pct = min(100.0, (s["hours_on"] / now_hours) * 100)
@@ -75,7 +81,7 @@ class UptimeChart(FigureCanvasQTAgg):
                     pct = 0.0
                 has_data = s is not None and s["hours_on"] > 0
             else:
-                s = Database.get_summary(d)
+                s = existing.get(d.isoformat())
                 if s:
                     pct = max(0.0, min(100.0, (s["hours_on"] / 24) * 100))
                     has_data = True
@@ -370,7 +376,7 @@ class SingleMetricChart(FigureCanvasQTAgg):
         self.ax.grid(alpha=0.3, linestyle="--")
         self.draw()
 
-    def plot(self, xs: list, ys: list, ping_fail_xs: list = None):
+    def plot(self, xs: list, ys: list, fail_indices: list = None):
         self.ax.clear()
 
         if not xs or not ys:
@@ -392,11 +398,22 @@ class SingleMetricChart(FigureCanvasQTAgg):
                 va="bottom", ha="right",
             )
 
-        if ping_fail_xs:
-            for x in ping_fail_xs:
+        if fail_indices:
+            # Agrupar fallos consecutivos en un solo span por caída
+            spans = []
+            a = b = fail_indices[0]
+            for i in fail_indices[1:]:
+                if i == b + 1:
+                    b = i
+                else:
+                    spans.append((a, b))
+                    a = b = i
+            spans.append((a, b))
+
+            for a, b in spans:
                 self.ax.axvspan(
-                    x - timedelta(seconds=30),
-                    x + timedelta(seconds=30),
+                    xs[a] - timedelta(seconds=30),
+                    xs[b] + timedelta(seconds=30),
                     color="#C62828", alpha=0.20, zorder=0,
                 )
 
@@ -418,7 +435,6 @@ class SingleMetricChart(FigureCanvasQTAgg):
             self.ax.spines[s].set_visible(False)
 
         # Marcas horarias limpias
-        import matplotlib.dates as mdates
         locator = mdates.AutoDateLocator(minticks=4, maxticks=10)
         formatter = mdates.DateFormatter("%H:%M")
         self.ax.xaxis.set_major_locator(locator)
